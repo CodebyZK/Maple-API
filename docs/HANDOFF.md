@@ -432,13 +432,12 @@ The initial release also passed a real query against all 1,264,036 records.
 
 The production service works, but these items remain:
 
-1. Add GitLab CI to run Data API tests on every merge request.
-2. Automate Data API deployment instead of pulling manually.
-3. Replace Atlas's GitLab Pages deployment with an Nginx deployment job.
-4. Set `VITE_DATA_API_URL=/api/v1` in the Atlas CI build environment.
-5. Script and test atomic Forge dataset publication and rollback.
-6. Add monitoring for health, latency, process restarts, and disk space.
-7. Consider caching common aggregate queries if production traffic makes the
+1. Automate Data API deployment instead of pulling manually.
+2. Replace Atlas's GitLab Pages deployment with an Nginx deployment job.
+3. Set `VITE_DATA_API_URL=/api/v1` in the Atlas CI build environment.
+4. Script and test atomic Forge dataset publication and rollback.
+5. Add monitoring for health, latency, process restarts, and disk space.
+6. Consider caching common aggregate queries if production traffic makes the
    current roughly 1.5-second uncached text-search latency insufficient.
 
 Do not describe the deployment as fully automated until these gaps are closed.
