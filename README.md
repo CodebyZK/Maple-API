@@ -27,3 +27,6 @@ Endpoints:
 - `GET /health`
 - `GET /v1/grants`
 
+See [docs/HANDOFF.md](docs/HANDOFF.md) for the production architecture,
+server paths, deployment procedure, dataset refresh process, and
+troubleshooting guide.
