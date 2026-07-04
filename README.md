@@ -27,6 +27,10 @@ Endpoints:
 - `GET /health`
 - `GET /v1/grants`
 
+Grant queries support text, province, department, agreement start-date range,
+minimum-value, pagination, and sort parameters. Records default to newest
+agreement start date first, with missing dates last.
+
 See [docs/HANDOFF.md](docs/HANDOFF.md) for the production architecture,
 server paths, deployment procedure, dataset refresh process, and
 troubleshooting guide.

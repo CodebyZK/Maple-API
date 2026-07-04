@@ -215,6 +215,10 @@ Query parameters:
 | `query` | empty | Maximum 200 characters |
 | `province` | empty | Exact province/territory code |
 | `department` | empty | Exact department name |
+| `start_date` | empty | Agreement start date on or after this ISO date |
+| `end_date` | empty | Agreement start date on or before this ISO date |
+| `minimum_value` | empty | Non-negative minimum agreement value |
+| `sort` | `date_desc` | `date_desc`, `date_asc`, `value_desc`, or `value_asc` |
 | `page` | `1` | Minimum 1 |
 | `page_size` | `25` | From 1 through 100 |
 
@@ -239,7 +243,8 @@ Region totals apply the text and department filters but deliberately ignore
 the selected province. Atlas needs this behavior so users can move directly
 between map regions.
 
-Record pages are ordered by stable `record_id`.
+Record pages default to newest agreement start date first, with undated
+agreements last. Every sort uses `record_id` as a stable tie-breaker.
 
 ## Dataset lineage and integrity
 

@@ -6,8 +6,9 @@ import json
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import duckdb
 from fastapi import FastAPI, Query, Request
@@ -54,6 +55,13 @@ SEARCH_COLUMNS = (
     "province",
 )
 
+SORT_ORDERS = {
+    "date_desc": "agreement_start_date DESC NULLS LAST, record_id ASC",
+    "date_asc": "agreement_start_date ASC NULLS LAST, record_id ASC",
+    "value_desc": "agreement_value DESC, record_id ASC",
+    "value_asc": "agreement_value ASC, record_id ASC",
+}
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -87,10 +95,13 @@ def _where(
     query: str,
     province: str,
     department: str,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    minimum_value: float | None = None,
     include_province: bool = True,
-) -> tuple[str, list[str]]:
+) -> tuple[str, list[Any]]:
     clauses: list[str] = []
-    parameters: list[str] = []
+    parameters: list[Any] = []
 
     query = query.strip()
     if query:
@@ -109,6 +120,15 @@ def _where(
     if department:
         clauses.append("department = ?")
         parameters.append(department)
+    if start_date is not None:
+        clauses.append("agreement_start_date >= ?")
+        parameters.append(start_date)
+    if end_date is not None:
+        clauses.append("agreement_start_date <= ?")
+        parameters.append(end_date)
+    if minimum_value is not None:
+        clauses.append("agreement_value >= ?")
+        parameters.append(minimum_value)
 
     return (" WHERE " + " AND ".join(clauses) if clauses else ""), parameters
 
@@ -190,6 +210,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         query: str = Query(default="", max_length=200),
         province: str = Query(default="", max_length=100),
         department: str = Query(default="", max_length=300),
+        start_date: date | None = Query(default=None),
+        end_date: date | None = Query(default=None),
+        minimum_value: float | None = Query(default=None, ge=0),
+        sort: Literal[
+            "date_desc", "date_asc", "value_desc", "value_asc"
+        ] = Query(default="date_desc"),
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=25, ge=1, le=100),
     ) -> dict[str, Any]:
@@ -198,11 +224,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             query=query,
             province=province,
             department=department,
+            start_date=start_date,
+            end_date=end_date,
+            minimum_value=minimum_value,
         )
         region_where, region_parameters = _where(
             query=query,
             province=province,
             department=department,
+            start_date=start_date,
+            end_date=end_date,
+            minimum_value=minimum_value,
             include_province=False,
         )
 
@@ -224,7 +256,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 connection.execute(
                     f"SELECT {', '.join(RECORD_SELECT_COLUMNS)} "
                     f"FROM {source}{where} "
-                    "ORDER BY record_id LIMIT ? OFFSET ?",
+                    f"ORDER BY {SORT_ORDERS[sort]} LIMIT ? OFFSET ?",
                     [*parameters, page_size, offset],
                 )
             )

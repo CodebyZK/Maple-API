@@ -136,3 +136,38 @@ def test_grants_clamps_page_and_rejects_large_pages(tmp_path: Path) -> None:
     assert response.json()["totalPages"] == 2
     assert invalid.status_code == 422
 
+
+def test_grants_filters_dates_and_value_and_sorts_newest_first(
+    tmp_path: Path,
+) -> None:
+    with TestClient(create_app(_write_fixture(tmp_path))) as client:
+        response = client.get(
+            "/v1/grants",
+            params={
+                "start_date": "2025-01-15",
+                "end_date": "2025-12-31",
+                "minimum_value": 100,
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["totalRecords"] == 1
+    assert [record["record_id"] for record in payload["records"]] == [
+        "grant-2"
+    ]
+
+
+def test_grants_supports_value_sort_and_validates_sort(tmp_path: Path) -> None:
+    with TestClient(create_app(_write_fixture(tmp_path))) as client:
+        response = client.get("/v1/grants", params={"sort": "value_desc"})
+        invalid = client.get("/v1/grants", params={"sort": "random"})
+
+    assert response.status_code == 200
+    assert [record["record_id"] for record in response.json()["records"]] == [
+        "grant-2",
+        "grant-1",
+        "grant-3",
+    ]
+    assert invalid.status_code == 422
+
