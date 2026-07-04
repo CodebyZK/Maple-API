@@ -1,0 +1,2 @@
+"""Maple Data API."""
+

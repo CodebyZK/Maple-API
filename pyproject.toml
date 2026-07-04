@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "maple-data-api"
+version = "0.1.0"
+description = "Parquet-backed data API for Maple Atlas"
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb==1.5.4",
+    "fastapi==0.139.0",
+    "uvicorn[standard]==0.50.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx>=0.28,<1",
+    "pyarrow>=23,<24",
+    "pytest>=9,<10",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
