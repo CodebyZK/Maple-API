@@ -208,6 +208,14 @@ Example response:
 
 ### `GET /v1/grants`
 
+With a Forge schema 2.0.0 dataset, the API reads only rows where
+`is_latest_amendment` is true. Every amendment row restates the agreement's
+full value, so this counts each agreement once. `totalRecords`, totals,
+regions, locations, and `dataset.recordCount` (the manifest's `agreements`
+count) are all agreement counts. `dataset.latestAmendmentsOnly` is `false` when
+an older dataset without amendment flags is loaded; in that mode, totals
+overcount amended agreements.
+
 Query parameters:
 
 | Parameter | Default | Rules |
@@ -245,6 +253,12 @@ between map regions.
 
 Record pages default to newest agreement start date first, with undated
 agreements last. Every sort uses `record_id` as a stable tie-breaker.
+
+### `GET /v1/agreements/{agreement_id}/amendments`
+
+Returns every amendment of one agreement, ordered by amendment number, with
+`is_latest_amendment` on each row. Returns 404 for an unknown agreement or when
+the dataset predates amendment flags.
 
 ## Dataset lineage and integrity
 
@@ -363,8 +377,24 @@ Do not overwrite the live Parquet file while the API is querying it. Use
 same-filesystem renames so publication is atomic. Retain the previous pair
 until the new deployment passes its smoke tests.
 
-The exact atomic refresh should be scripted before routine scheduled updates;
-it is not automated yet.
+The Forge repository now contains `scripts/publish-atlas-dataset.sh`, invoked
+by its `refresh-atlas-production` scheduled GitLab job. It validates the
+incoming manifest checksum and a one-million-record floor, creates immutable
+release directories, atomically repoints `/srv/maple-atlas/data/current`, and
+rolls back the symlink if restarting or health-checking the API fails.
+
+Before enabling the GitLab schedule, update the systemd service environment to
+use the symlinked release paths:
+
+```text
+MAPLE_PARQUET_PATH=/srv/maple-atlas/data/current/grants.parquet
+MAPLE_MANIFEST_PATH=/srv/maple-atlas/data/current/grants.manifest.json
+```
+
+The publisher declares this dataset quarterly. Schedule the Forge GitLab
+pipeline for 06:30 UTC on the 15th of January, April, July, and October:
+`30 6 15 1,4,7,10 *`. Configure the protected GitLab SSH variables documented
+in Forge before enabling it.
 
 ## Verification commands
 
