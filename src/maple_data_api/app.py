@@ -11,8 +11,14 @@ from pathlib import Path
 from typing import Any, Literal
 
 import duckdb
-from fastapi import FastAPI, HTTPException, Path as PathParameter, Query, Request
+from fastapi import FastAPI, HTTPException, Path as PathParameter, Query, Request, Response
 
+from maple_data_api.sitemaps import (
+    pages_sitemap,
+    recipient_sitemap_count,
+    recipients_sitemap,
+    sitemap_index,
+)
 from maple_data_api.recipients import (
     RECIPIENT_COLUMNS,
     charity_for,
@@ -302,6 +308,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         redoc_url=None,
         lifespan=lifespan,
     )
+
+    def _xml(body: str) -> Response:
+        return Response(
+            content=body,
+            media_type="application/xml",
+            headers={"Cache-Control": "public, max-age=3600"},
+        )
+
+    def _lastmod(request: Request) -> str:
+        return str(request.app.state.dataset["retrievedAt"])[:10]
+
+    @app.get("/v1/sitemap.xml")
+    def sitemap(request: Request) -> Response:
+        _require_recipients(request)
+        with duckdb.connect() as connection:
+            files = recipient_sitemap_count(connection, request.app.state.source)
+        return _xml(sitemap_index(files, _lastmod(request)))
+
+    @app.get("/v1/sitemaps/pages.xml")
+    def sitemap_pages(request: Request) -> Response:
+        return _xml(pages_sitemap(_lastmod(request)))
+
+    @app.get("/v1/sitemaps/recipients-{number}.xml")
+    def sitemap_recipients(request: Request, number: int = PathParameter(ge=1, le=1000)) -> Response:
+        _require_recipients(request)
+        with duckdb.connect() as connection:
+            body = recipients_sitemap(connection, request.app.state.source, number, _lastmod(request))
+        if body is None:
+            raise HTTPException(status_code=404, detail="Sitemap not found.")
+        return _xml(body)
 
     @app.get("/health")
     def health(request: Request) -> dict[str, Any]:

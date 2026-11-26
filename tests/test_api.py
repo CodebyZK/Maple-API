@@ -579,3 +579,29 @@ def test_profile_has_size_buckets_and_program_rank(tmp_path: Path) -> None:
     assert rank["rank"] == 2
     assert rank["recipients"] == 5
     assert round(rank["share"], 3) == round(2_020_000 / 5_090_000, 3)
+
+
+
+def test_sitemaps_list_content_pages_and_organizations_only(tmp_path: Path, monkeypatch) -> None:
+    import xml.etree.ElementTree as ET
+
+    monkeypatch.setenv("MAPLE_PUBLIC_BASE_URL", "https://atlas.example")
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    with TestClient(create_app(_write_network_fixture(tmp_path))) as client:
+        index = client.get("/v1/sitemap.xml")
+        pages = client.get("/v1/sitemaps/pages.xml")
+        recipients = client.get("/v1/sitemaps/recipients-1.xml")
+        missing = client.get("/v1/sitemaps/recipients-2.xml")
+
+    assert index.status_code == 200
+    assert index.headers["content-type"].startswith("application/xml")
+    locs = [e.text for e in ET.fromstring(index.text).findall("s:sitemap/s:loc", ns)]
+    assert locs == ["https://atlas.example/sitemaps/pages.xml", "https://atlas.example/sitemaps/recipients-1.xml"]
+    assert ET.fromstring(index.text).find("s:sitemap/s:lastmod", ns).text == "2026-01-01"
+    page_urls = [e.text for e in ET.fromstring(pages.text).findall("s:url/s:loc", ns)]
+    assert "https://atlas.example/methods" in page_urls
+    recipient_urls = [e.text for e in ET.fromstring(recipients.text).findall("s:url/s:loc", ns)]
+    assert "https://atlas.example/recipients/rec-acme" in recipient_urls
+    assert "https://atlas.example/recipients/rec-person" not in recipient_urls
+    assert recipient_urls == sorted(recipient_urls)
+    assert missing.status_code == 404
