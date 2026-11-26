@@ -17,6 +17,7 @@ from maple_data_api.recipients import (
     RECIPIENT_COLUMNS,
     charity_for,
     recipient_profile,
+    similar_recipients,
     top_recipients,
 )
 
@@ -473,6 +474,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 include_people=include_people,
             )
         return {"recipients": recipients, "dataset": request.app.state.dataset}
+
+    @app.get("/v1/recipients/{recipient_id}/similar")
+    def recipient_similar(
+        request: Request,
+        recipient_id: str = PathParameter(max_length=100),
+        limit: int = Query(default=8, ge=1, le=20),
+    ) -> dict[str, Any]:
+        _require_recipients(request)
+        with duckdb.connect() as connection:
+            similar = similar_recipients(
+                connection, request.app.state.source, recipient_id, limit=limit
+            )
+        return {"recipientId": recipient_id, "similar": similar}
 
     @app.get("/v1/recipients/{recipient_id}")
     def recipient(

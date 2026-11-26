@@ -516,3 +516,64 @@ def test_profiles_have_no_charity_without_charity_data(tmp_path: Path) -> None:
         profile = client.get("/v1/recipients/rec-acme").json()
 
     assert profile["charity"] is None
+
+
+
+def _write_network_fixture(tmp_path: Path) -> Settings:
+    def row(record_id, recipient_id, name, value, program, *, person=False, kind="F"):
+        return {
+            **_profile_record(record_id, recipient_id, name, value, start=date(2024, 1, 1), recipient_type=kind, is_person=person),
+            "program_name": program,
+        }
+
+    records = [
+        row("a1", "rec-acme", "Acme Inc.", 20_000.0, "Clean Tech"),
+        row("a2", "rec-acme", "Acme Inc.", 2_000_000.0, "Clean Tech"),
+        row("a3", "rec-acme", "Acme Inc.", 500_000.0, "Exports"),
+        row("b1", "rec-beta", "Beta Corp", 3_000_000.0, "Clean Tech"),
+        row("b2", "rec-beta", "Beta Corp", 100_000.0, "Exports"),
+        row("c1", "rec-gamma", "Gamma Ltd", 50_000.0, "Clean Tech"),
+        row("d1", "rec-delta", "Delta Farms", 900_000.0, "Farming"),
+        row("b3", "rec-beta-2", "BETA CORP", 10_000.0, "Clean Tech"),
+        row("p1", "rec-person", "Doe, Jane", 10_000.0, "Clean Tech", person=True, kind="P"),
+    ]
+    parquet_path = tmp_path / "grants.parquet"
+    table = pa.Table.from_pylist(records)
+    table = table.cast(table.schema.set(3, pa.field("amendment_number", pa.int32())))
+    pq.write_table(table, parquet_path)
+    manifest_path = tmp_path / "grants.manifest.json"
+    manifest_path.write_text(
+        json.dumps({"schema_version": "2.1.0", "source": {"retrieved_at": "2026-01-01T00:00:00Z"}, "counts": {"accepted": 9, "agreements": 9}}),
+        encoding="utf-8",
+    )
+    return Settings(parquet_path=parquet_path, manifest_path=manifest_path)
+
+
+def test_similar_recipients_share_programs_and_exclude_people(tmp_path: Path) -> None:
+    with TestClient(create_app(_write_network_fixture(tmp_path))) as client:
+        acme = client.get("/v1/recipients/rec-acme/similar").json()["similar"]
+        person = client.get("/v1/recipients/rec-person/similar").json()["similar"]
+
+    # "BETA CORP" is a second profile with the same name: listed once.
+    assert [item["recipientId"] for item in acme] == ["rec-beta", "rec-gamma"]
+    assert acme[0]["sharedPrograms"] == ["Clean Tech", "Exports"]
+    assert acme[0]["totalFunding"] == 3_100_000.0
+    assert "rec-person" not in [item["recipientId"] for item in acme]
+    assert "rec-delta" not in [item["recipientId"] for item in acme]
+    assert person == []
+
+
+def test_profile_has_size_buckets_and_program_rank(tmp_path: Path) -> None:
+    with TestClient(create_app(_write_network_fixture(tmp_path))) as client:
+        profile = client.get("/v1/recipients/rec-acme").json()
+
+    buckets = {item["label"]: item for item in profile["sizeBuckets"]}
+    assert buckets["Under $25K"]["count"] == 1
+    assert buckets["$100K to $1M"]["count"] == 1
+    assert buckets["$1M to $10M"] == {"label": "$1M to $10M", "count": 1, "value": 2_000_000.0}
+    assert buckets["$10M and over"]["count"] == 0
+    rank = profile["programRank"]
+    assert rank["program"] == "Clean Tech"
+    assert rank["rank"] == 2
+    assert rank["recipients"] == 5
+    assert round(rank["share"], 3) == round(2_020_000 / 5_090_000, 3)

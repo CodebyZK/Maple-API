@@ -91,6 +91,141 @@ def _affiliation(
     return {"name": row[0], "businessNumber": row[1], "agreementCount": int(row[2])}
 
 
+SIZE_BUCKETS = (
+    ("Under $25K", None, 25_000),
+    ("$25K to $100K", 25_000, 100_000),
+    ("$100K to $1M", 100_000, 1_000_000),
+    ("$1M to $10M", 1_000_000, 10_000_000),
+    ("$10M and over", 10_000_000, None),
+)
+
+
+def _size_buckets(
+    connection: duckdb.DuckDBPyConnection,
+    source: str,
+    recipient_id: str,
+) -> list[dict[str, Any]]:
+    """How many agreements fall in each size range, and their total value."""
+    cases = " ".join(
+        f"WHEN {'TRUE' if low is None else f'agreement_value >= {low}'} "
+        f"AND {'TRUE' if high is None else f'agreement_value < {high}'} THEN {index}"
+        for index, (_, low, high) in enumerate(SIZE_BUCKETS)
+    )
+    rows = dict(
+        (int(index), (int(count), float(value or 0)))
+        for index, count, value in connection.execute(
+            f"SELECT CASE {cases} END AS bucket, count(*), sum(agreement_value) "
+            f"FROM {source} WHERE recipient_id = ? GROUP BY 1",
+            [recipient_id],
+        ).fetchall()
+        if index is not None
+    )
+    return [
+        {"label": label, "count": rows.get(index, (0, 0.0))[0], "value": rows.get(index, (0, 0.0))[1]}
+        for index, (label, _, _) in enumerate(SIZE_BUCKETS)
+    ]
+
+
+def _program_rank(
+    connection: duckdb.DuckDBPyConnection,
+    source: str,
+    recipient_id: str,
+    program: str,
+) -> dict[str, Any] | None:
+    """Where the recipient ranks among everyone funded by its main program."""
+    row = connection.execute(
+        "WITH totals AS ("
+        f"  SELECT recipient_id, sum(agreement_value) AS value FROM {source} "
+        "  WHERE program_name = ? AND NOT recipient_is_aggregate GROUP BY 1"
+        "), ranked AS ("
+        "  SELECT recipient_id, value, rank() OVER (ORDER BY value DESC) AS position FROM totals"
+        ") "
+        "SELECT (SELECT position FROM ranked WHERE recipient_id = ?), count(*), sum(value), "
+        "(SELECT value FROM ranked WHERE recipient_id = ?) FROM ranked",
+        [program, recipient_id, recipient_id],
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    position, recipients, program_total, value = row
+    return {
+        "program": program,
+        "rank": int(position),
+        "recipients": int(recipients),
+        "programTotal": float(program_total or 0),
+        "share": float(value or 0) / float(program_total) if program_total else 0.0,
+    }
+
+
+def similar_recipients(
+    connection: duckdb.DuckDBPyConnection,
+    source: str,
+    recipient_id: str,
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Organizations funded by the same programs, most overlap first.
+
+    Similarity is computed from the government data only: recipients sharing
+    more of this recipient's top programs, then more funding in them, rank
+    higher. Individuals get no similar list, to avoid profiling people.
+    """
+    rows = connection.execute(
+        "WITH mine AS ("
+        f"  SELECT program_name, sum(agreement_value) AS value FROM {source} "
+        "  WHERE recipient_id = ? AND program_name IS NOT NULL "
+        "  GROUP BY 1 ORDER BY value DESC LIMIT 5"
+        "), me AS ("
+        f"  SELECT bool_or(recipient_is_person) AS person FROM {source} WHERE recipient_id = ?"
+        "), shared AS ("
+        "  SELECT g.recipient_id, g.program_name, sum(g.agreement_value) AS value "
+        f"  FROM (SELECT * FROM {source}) AS g JOIN mine USING (program_name) "
+        "  WHERE g.recipient_id <> ? AND NOT g.recipient_is_aggregate "
+        "    AND NOT g.recipient_is_person AND NOT (SELECT person FROM me) "
+        "  GROUP BY 1, 2"
+        ") "
+        "SELECT recipient_id, count(*) AS shared_programs, sum(value) AS shared_value, "
+        "list(program_name ORDER BY value DESC) AS programs "
+        "FROM shared GROUP BY 1 ORDER BY shared_programs DESC, shared_value DESC LIMIT ?",
+        # Fetch extra rows: one organization can have several profiles under
+        # name variants, and each name is listed once.
+        [recipient_id, recipient_id, recipient_id, limit * 2],
+    ).fetchall()
+    if not rows:
+        return []
+    ids = [row[0] for row in rows]
+    placeholders = ", ".join("?" for _ in ids)
+    details = {
+        row[0]: row[1:]
+        for row in connection.execute(
+            "SELECT recipient_id, mode(recipient_name), mode(province), mode(recipient_type), "
+            "sum(agreement_value), count(*) "
+            f"FROM {source} WHERE recipient_id IN ({placeholders}) GROUP BY 1",
+            ids,
+        ).fetchall()
+    }
+    similar = []
+    seen_names: set[str] = set()
+    for other_id, shared_programs, shared_value, programs in rows:
+        name, province, kind, total, count = details[other_id]
+        key = " ".join(str(name).split("|", 1)[0].casefold().split())
+        if key in seen_names or len(similar) >= limit:
+            continue
+        seen_names.add(key)
+        similar.append(
+            {
+                "recipientId": other_id,
+                "name": name,
+                "province": province,
+                "recipientTypeLabel": RECIPIENT_TYPES.get(kind) if kind else None,
+                "sharedPrograms": list(programs),
+                "sharedValue": float(shared_value or 0),
+                "totalFunding": float(total or 0),
+                "agreementCount": int(count),
+            }
+        )
+    return similar
+
+
 def recipient_profile(
     connection: duckdb.DuckDBPyConnection,
     source: str,
@@ -151,6 +286,8 @@ def recipient_profile(
         )
     )
 
+    programs = _totals(connection, source, recipient_id, "program_name", 8)
+
     return {
         "recipientId": recipient_id,
         "name": names[0],
@@ -173,8 +310,14 @@ def recipient_profile(
         "byYear": by_year,
         "undated": {"value": float(undated[0]), "count": int(undated[1])},
         "departments": _totals(connection, source, recipient_id, "department", 8),
-        "programs": _totals(connection, source, recipient_id, "program_name", 8),
+        "programs": programs,
         "largestAgreements": largest,
+        "sizeBuckets": _size_buckets(connection, source, recipient_id),
+        "programRank": (
+            _program_rank(connection, source, recipient_id, programs[0]["name"])
+            if programs and not aggregate
+            else None
+        ),
     }
 
 
