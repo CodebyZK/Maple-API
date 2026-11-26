@@ -486,6 +486,8 @@ def _write_charities(tmp_path: Path) -> Path:
         "revenue_government_total": 1580.0,
         "list_year": "2024",
     }]
+    # A smaller second registration under the same business number.
+    rows.append({**rows[0], "registration_number": "111111112RR0002", "legal_name": "ACME FOUNDATION PARISH", "total_revenue": 10.0})
     pq.write_table(pa.Table.from_pylist(rows), path)
     return path
 

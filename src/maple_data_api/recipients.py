@@ -373,7 +373,10 @@ def charity_for(
         "SELECT registration_number, legal_name, designation, category, city, province, "
         "fiscal_period_end, section_used, list_year, "
         + ", ".join(CHARITY_AMOUNTS)
-        + f" FROM {charities_source} WHERE recipient_id = ? LIMIT 1",
+        # An organization can hold several registrations under one business
+        # number; show the largest by revenue so the choice is stable.
+        + f" FROM {charities_source} WHERE recipient_id = ? "
+        "ORDER BY total_revenue DESC NULLS LAST, registration_number LIMIT 1",
         [recipient_id],
     ).fetchone()
     if row is None:
