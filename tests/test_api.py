@@ -325,3 +325,134 @@ def test_agreement_amendments_unavailable_for_legacy_dataset(tmp_path: Path) -> 
         response = client.get("/v1/agreements/grant-1/amendments")
 
     assert response.status_code == 404
+
+
+def _profile_record(
+    record_id: str,
+    recipient_id: str,
+    name: str,
+    value: float,
+    *,
+    start: date | None,
+    department: str = "Department A",
+    is_person: bool = False,
+    business_number: str | None = None,
+    recipient_type: str = "F",
+    is_latest: bool = True,
+) -> dict[str, object]:
+    return {
+        "record_id": record_id,
+        "agreement_id": f"agreement-{record_id}",
+        "reference_number": record_id,
+        "amendment_number": 0,
+        "recipient_name": name,
+        "recipient_type": recipient_type,
+        "business_number": business_number,
+        "agreement_title": f"Project {record_id}",
+        "agreement_value": value,
+        "agreement_start_date": start,
+        "agreement_end_date": None,
+        "province": "ON",
+        "city": "Toronto",
+        "department": department,
+        "program_name": "Fund",
+        "description": "Purpose",
+        "source_url": "https://example.ca/grants.csv",
+        "retrieved_at": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        "is_latest_amendment": is_latest,
+        "amendment_count": 1,
+        "recipient_id": recipient_id,
+        "recipient_is_person": is_person,
+        "recipient_is_aggregate": recipient_id == "rec-batch",
+    }
+
+
+def _write_profile_fixture(tmp_path: Path) -> Settings:
+    records = [
+        _profile_record("a1", "rec-acme", "Acme Inc.", 100.0, start=date(2023, 4, 1), business_number="111111112"),
+        _profile_record("a2", "rec-acme", "ACME INCORPORATED", 300.0, start=date(2024, 5, 1), department="Department B", business_number="111111112"),
+        _profile_record("a3", "rec-acme", "Acme Inc.", 50.0, start=None, business_number="111111112"),
+        _profile_record("a4", "rec-acme", "Acme Inc.", 999.0, start=date(2024, 6, 1), business_number="111111112", is_latest=False),
+        _profile_record("u1", "rec-uni", "University of Example", 1000.0, start=date(2022, 1, 1), recipient_type="S", business_number="222222223"),
+        _profile_record("p1", "rec-person", "Doe, Jane", 20.0, start=date(2024, 1, 1), recipient_type="P", is_person=True, business_number="222222223"),
+        _profile_record("b1", "rec-batch", "Batch report | Rapport en lots", 5000.0, start=date(2024, 1, 1), recipient_type="P"),
+    ]
+    parquet_path = tmp_path / "grants.parquet"
+    table = pa.Table.from_pylist(records)
+    table = table.cast(table.schema.set(3, pa.field("amendment_number", pa.int32())))
+    pq.write_table(table, parquet_path)
+    manifest_path = tmp_path / "grants.manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "2.1.0",
+                "source": {"retrieved_at": "2026-01-01T00:00:00Z"},
+                "counts": {"accepted": 6, "agreements": 5},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return Settings(parquet_path=parquet_path, manifest_path=manifest_path)
+
+
+def test_recipient_profile_totals_latest_amendments_by_year(tmp_path: Path) -> None:
+    with TestClient(create_app(_write_profile_fixture(tmp_path))) as client:
+        response = client.get("/v1/recipients/rec-acme")
+        grants = client.get("/v1/grants", params={"query": "acme"}).json()
+
+    assert response.status_code == 200
+    profile = response.json()
+    assert profile["name"] == "Acme Inc."
+    assert profile["otherNames"] == ["ACME INCORPORATED"]
+    assert profile["isPerson"] is False
+    assert profile["isAggregate"] is False
+    assert profile["recipientTypeLabel"] == "For-profit organization"
+    assert profile["businessNumber"] == "111111112"
+    assert profile["totalFunding"] == 450.0
+    assert profile["agreementCount"] == 3
+    assert profile["byYear"] == [
+        {"year": 2023, "value": 100.0, "count": 1},
+        {"year": 2024, "value": 300.0, "count": 1},
+    ]
+    assert profile["undated"] == {"value": 50.0, "count": 1}
+    assert profile["departments"][0]["name"] == "Department B"
+    assert [item["record_id"] for item in profile["largestAgreements"]] == ["a2", "a1", "a3"]
+    assert profile["affiliation"] is None
+    assert grants["records"][0]["recipient_id"] == "rec-acme"
+
+
+def test_person_profile_hides_business_number_and_shows_affiliation(tmp_path: Path) -> None:
+    with TestClient(create_app(_write_profile_fixture(tmp_path))) as client:
+        profile = client.get("/v1/recipients/rec-person").json()
+
+    assert profile["isPerson"] is True
+    assert profile["businessNumber"] is None
+    assert profile["affiliation"] == {
+        "name": "University of Example",
+        "businessNumber": "222222223",
+        "agreementCount": 1,
+    }
+
+
+def test_top_recipients_excludes_people_by_default(tmp_path: Path) -> None:
+    with TestClient(create_app(_write_profile_fixture(tmp_path))) as client:
+        organizations = client.get("/v1/recipients/top", params={"limit": 10}).json()
+        everyone = client.get(
+            "/v1/recipients/top", params={"limit": 10, "include_people": True}
+        ).json()
+        missing = client.get("/v1/recipients/nope")
+        batch = client.get("/v1/recipients/rec-batch").json()
+
+    assert [item["recipientId"] for item in organizations["recipients"]] == [
+        "rec-uni",
+        "rec-acme",
+    ]
+    assert len(everyone["recipients"]) == 3
+    assert missing.status_code == 404
+    assert batch["isAggregate"] is True
+
+
+def test_recipient_endpoints_unavailable_without_recipient_columns(tmp_path: Path) -> None:
+    with TestClient(create_app(_write_amended_fixture(tmp_path))) as client:
+        assert client.get("/v1/recipients/top").status_code == 404
+        assert client.get("/v1/recipients/x").status_code == 404
