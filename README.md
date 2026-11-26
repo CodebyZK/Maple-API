@@ -45,6 +45,11 @@ largest recipients (organizations only unless `include_people=true`) and
 always excludes placeholder entries such as "Batch report" and "Withheld".
 Maple Beacon uses both endpoints.
 
+Set `MAPLE_CHARITIES_PATH` to Forge's `charities.parquet` to add a `charity`
+section (CRA T3010 return: revenue by level of government, spending, assets)
+to profiles of recipients that are registered charities. Without it, `charity`
+is always `null`.
+
 Grant queries support scoped keyword search, province, department,
 start/end/active date ranges, funding ranges, pagination, location summaries,
 and sort parameters. Records default to newest agreement start date first, with

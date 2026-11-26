@@ -200,3 +200,54 @@ def top_recipients(
             [limit],
         )
     )
+
+
+CHARITY_AMOUNTS = (
+    "revenue_federal",
+    "revenue_provincial",
+    "revenue_municipal",
+    "revenue_government_total",
+    "total_revenue",
+    "charitable_programs",
+    "management_and_administration",
+    "fundraising",
+    "total_expenditures",
+    "total_assets",
+    "total_liabilities",
+)
+
+
+def charity_for(
+    connection: duckdb.DuckDBPyConnection,
+    charities_source: str,
+    recipient_id: str,
+) -> dict[str, Any] | None:
+    """The CRA charity return linked to a recipient, if it is a registered charity.
+
+    Amounts that the charity did not report stay null; they are never zero.
+    """
+    row = connection.execute(
+        "SELECT registration_number, legal_name, designation, category, city, province, "
+        "fiscal_period_end, section_used, list_year, "
+        + ", ".join(CHARITY_AMOUNTS)
+        + f" FROM {charities_source} WHERE recipient_id = ? LIMIT 1",
+        [recipient_id],
+    ).fetchone()
+    if row is None:
+        return None
+    keys = (
+        "registrationNumber", "legalName", "designation", "category", "city", "province",
+        "fiscalPeriodEnd", "sectionUsed", "listYear",
+    )
+    charity: dict[str, Any] = dict(zip(keys, row[: len(keys)], strict=True))
+    if charity["fiscalPeriodEnd"] is not None:
+        charity["fiscalPeriodEnd"] = charity["fiscalPeriodEnd"].isoformat()
+    charity["amounts"] = {
+        name: (float(value) if value is not None else None)
+        for name, value in zip(CHARITY_AMOUNTS, row[len(keys):], strict=True)
+    }
+    charity["source"] = "Canada Revenue Agency, List of charities"
+    charity["sourceUrl"] = (
+        "https://open.canada.ca/data/en/dataset/80c00cdb-1358-415c-bb8b-0de7f12675b8"
+    )
+    return charity
