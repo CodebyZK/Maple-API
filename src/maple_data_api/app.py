@@ -13,6 +13,12 @@ from typing import Any, Literal
 import duckdb
 from fastapi import FastAPI, HTTPException, Path as PathParameter, Query, Request
 
+from maple_data_api.recipients import (
+    RECIPIENT_COLUMNS,
+    recipient_profile,
+    top_recipients,
+)
+
 REGIONS = (
     ("YT", "Yukon"),
     ("NT", "Northwest Territories"),
@@ -256,10 +262,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.source = source
         app.state.raw_source = raw_source
         app.state.latest_only = latest_only
+        # Recipient profiles need amendment flags too: without them totals
+        # would count amended agreements more than once.
+        has_recipients = latest_only and RECIPIENT_COLUMNS <= columns
+        app.state.has_recipients = has_recipients
         app.state.record_columns = (
-            (*RECORD_SELECT_COLUMNS, *AMENDMENT_SELECT_COLUMNS)
-            if latest_only
-            else RECORD_SELECT_COLUMNS
+            *RECORD_SELECT_COLUMNS,
+            *(AMENDMENT_SELECT_COLUMNS if latest_only else ()),
+            *(
+                ("recipient_id", "recipient_is_person", "recipient_is_aggregate")
+                if has_recipients
+                else ()
+            ),
         )
         app.state.dataset = _dataset_info(manifest, latest_only=latest_only)
         app.state.province_options = province_options
@@ -422,6 +436,43 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "departmentOptions": request.app.state.department_options,
             "dataset": request.app.state.dataset,
         }
+
+    def _require_recipients(request: Request) -> None:
+        if not request.app.state.has_recipients:
+            raise HTTPException(
+                status_code=404,
+                detail="This dataset does not include recipient profiles.",
+            )
+
+    @app.get("/v1/recipients/top")
+    def recipients_top(
+        request: Request,
+        limit: int = Query(default=50, ge=1, le=500),
+        include_people: bool = Query(default=False),
+    ) -> dict[str, Any]:
+        _require_recipients(request)
+        with duckdb.connect() as connection:
+            recipients = top_recipients(
+                connection,
+                request.app.state.source,
+                limit=limit,
+                include_people=include_people,
+            )
+        return {"recipients": recipients, "dataset": request.app.state.dataset}
+
+    @app.get("/v1/recipients/{recipient_id}")
+    def recipient(
+        request: Request,
+        recipient_id: str = PathParameter(max_length=100),
+    ) -> dict[str, Any]:
+        _require_recipients(request)
+        with duckdb.connect() as connection:
+            profile = recipient_profile(
+                connection, request.app.state.source, recipient_id
+            )
+        if profile is None:
+            raise HTTPException(status_code=404, detail="Recipient not found.")
+        return {**profile, "dataset": request.app.state.dataset}
 
     @app.get("/v1/agreements/{agreement_id}/amendments")
     def agreement_amendments(
