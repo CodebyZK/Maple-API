@@ -130,12 +130,14 @@ def recipient_profile(
             [recipient_id],
         )
     )
-    # The most frequently published spelling is the display name.
+    # The most frequently published spelling is the display name; on a tie,
+    # prefer a mixed-case spelling over ALL CAPS.
     names = [
         row[0]
         for row in connection.execute(
             f"SELECT recipient_name FROM {source} WHERE recipient_id = ? "
-            "GROUP BY 1 ORDER BY count(*) DESC, recipient_name LIMIT 5",
+            "GROUP BY 1 ORDER BY count(*) DESC, "
+            "(recipient_name = upper(recipient_name)) ASC, recipient_name LIMIT 5",
             [recipient_id],
         ).fetchall()
     ]
