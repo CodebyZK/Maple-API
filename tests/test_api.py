@@ -456,3 +456,63 @@ def test_recipient_endpoints_unavailable_without_recipient_columns(tmp_path: Pat
     with TestClient(create_app(_write_amended_fixture(tmp_path))) as client:
         assert client.get("/v1/recipients/top").status_code == 404
         assert client.get("/v1/recipients/x").status_code == 404
+
+
+
+def _write_charities(tmp_path: Path) -> Path:
+    path = tmp_path / "charities.parquet"
+    rows = [{
+        "business_number": "111111112",
+        "registration_number": "111111112RR0001",
+        "recipient_id": "rec-acme",
+        "legal_name": "ACME FOUNDATION",
+        "designation": "Charitable organization",
+        "category": "Research",
+        "city": "TORONTO",
+        "province": "ON",
+        "fiscal_period_end": date(2024, 3, 31),
+        "section_used": "6",
+        "revenue_federal": 380.0,
+        "revenue_provincial": 1200.0,
+        "revenue_municipal": None,
+        "revenue_government_reported": None,
+        "total_revenue": 3700.0,
+        "charitable_programs": 3300.0,
+        "management_and_administration": 200.0,
+        "fundraising": None,
+        "total_expenditures": 3500.0,
+        "total_assets": 8300.0,
+        "total_liabilities": 5600.0,
+        "revenue_government_total": 1580.0,
+        "list_year": "2024",
+    }]
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    return path
+
+
+def test_recipient_profile_includes_linked_charity(tmp_path: Path) -> None:
+    settings = _write_profile_fixture(tmp_path)
+    settings = Settings(
+        parquet_path=settings.parquet_path,
+        manifest_path=settings.manifest_path,
+        charities_path=_write_charities(tmp_path),
+    )
+    with TestClient(create_app(settings)) as client:
+        acme = client.get("/v1/recipients/rec-acme").json()
+        other = client.get("/v1/recipients/rec-uni").json()
+
+    charity = acme["charity"]
+    assert charity["registrationNumber"] == "111111112RR0001"
+    assert charity["fiscalPeriodEnd"] == "2024-03-31"
+    assert charity["amounts"]["revenue_federal"] == 380.0
+    assert charity["amounts"]["revenue_municipal"] is None
+    assert charity["amounts"]["revenue_government_total"] == 1580.0
+    assert "open.canada.ca" in charity["sourceUrl"]
+    assert other["charity"] is None
+
+
+def test_profiles_have_no_charity_without_charity_data(tmp_path: Path) -> None:
+    with TestClient(create_app(_write_profile_fixture(tmp_path))) as client:
+        profile = client.get("/v1/recipients/rec-acme").json()
+
+    assert profile["charity"] is None

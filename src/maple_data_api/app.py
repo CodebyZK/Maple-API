@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException, Path as PathParameter, Query, Reques
 
 from maple_data_api.recipients import (
     RECIPIENT_COLUMNS,
+    charity_for,
     recipient_profile,
     top_recipients,
 )
@@ -94,6 +95,8 @@ SORT_ORDERS = {
 class Settings:
     parquet_path: Path
     manifest_path: Path
+    # Optional CRA charity data from Forge (maple-forge-charities).
+    charities_path: Path | None = None
 
     @classmethod
     def from_environment(cls) -> Settings:
@@ -109,6 +112,11 @@ class Settings:
                     "MAPLE_MANIFEST_PATH",
                     "/srv/maple-atlas/data/grants.manifest.json",
                 )
+            ),
+            charities_path=(
+                Path(os.environ["MAPLE_CHARITIES_PATH"])
+                if os.environ.get("MAPLE_CHARITIES_PATH")
+                else None
             ),
         )
 
@@ -260,6 +268,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ]
 
         app.state.source = source
+        charities = configured_settings.charities_path
+        app.state.charities_source = (
+            f"read_parquet('{_quoted_path(charities)}')"
+            if charities is not None and charities.is_file()
+            else None
+        )
         app.state.raw_source = raw_source
         app.state.latest_only = latest_only
         # Recipient profiles need amendment flags too: without them totals
@@ -470,9 +484,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             profile = recipient_profile(
                 connection, request.app.state.source, recipient_id
             )
+            charity = (
+                charity_for(connection, request.app.state.charities_source, recipient_id)
+                if profile is not None and request.app.state.charities_source
+                else None
+            )
         if profile is None:
             raise HTTPException(status_code=404, detail="Recipient not found.")
-        return {**profile, "dataset": request.app.state.dataset}
+        return {**profile, "charity": charity, "dataset": request.app.state.dataset}
 
     @app.get("/v1/agreements/{agreement_id}/amendments")
     def agreement_amendments(
